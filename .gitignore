@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# C# / .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.csproj.user
+
+# Models (large binary files)
+models/whisper/*.bin
+models/whisper/*.pt
+models/nllb/*.bin
+models/nllb/pytorch_model.bin
+models/nllb/model.safetensors
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
