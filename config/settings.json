@@ -1,7 +1,9 @@
 {
-  "source_lang": "en",
-  "target_lang": "ko",
+  "source_lang": "auto",
+  "target_lang": "auto",
   "capture_mode": "Loopback",
+  "capture_device_id": null,
+  "capture_device_name": null,
   "microphone_device": 0,
   "subtitle_duration_ms": 5000,
   "show_original": true,
@@ -11,8 +13,6 @@
     "whisper_model_path": null,
     "nllb_model_name": "facebook/nllb-200-distilled-600M",
     "nllb_model_path": null,
-    "vad_threshold": 0.5,
-    "source_lang": "en",
-    "target_lang": "ko"
+    "vad_threshold": 0.5
   }
 }

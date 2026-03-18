@@ -8,20 +8,25 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-# NLLB language code map (common languages)
+# NLLB language code map
+# 핵심 7개 언어 + 추가 언어
 LANG_CODE_MAP = {
-    "ko": "kor_Hang",
-    "en": "eng_Latn",
-    "ja": "jpn_Jpan",
-    "zh": "zho_Hans",
-    "de": "deu_Latn",
-    "fr": "fra_Latn",
-    "es": "spa_Latn",
-    "ru": "rus_Cyrl",
-    "ar": "arb_Arab",
-    "vi": "vie_Latn",
-    "th": "tha_Thai",
-    "id": "ind_Latn",
+    # ── 핵심 7개 언어 ───────────────────────────────────────────
+    "ko": "kor_Hang",   # 한국어
+    "en": "eng_Latn",   # 영어
+    "de": "deu_Latn",   # 독일어
+    "ja": "jpn_Jpan",   # 일본어
+    "ru": "rus_Cyrl",   # 러시아어
+    "pt": "por_Latn",   # 포르투갈어 (브라질 포함, NLLB 코드 동일)
+    "zh": "zho_Hans",   # 중국어 (간체)
+    # ── 추가 언어 (향후 확장용) ──────────────────────────────────
+    "fr": "fra_Latn",   # 프랑스어
+    "es": "spa_Latn",   # 스페인어
+    "ar": "arb_Arab",   # 아랍어
+    "vi": "vie_Latn",   # 베트남어
+    "th": "tha_Thai",   # 태국어
+    "id": "ind_Latn",   # 인도네시아어
+    "zh-tw": "zho_Hant", # 중국어 (번체)
 }
 
 

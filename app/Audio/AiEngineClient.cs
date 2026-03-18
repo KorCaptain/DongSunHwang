@@ -91,7 +91,8 @@ public sealed class AiEngineClient : IDisposable
                         obj["text"]?.Value<string>() ?? string.Empty,
                         obj["translation"]?.Value<string>() ?? string.Empty,
                         obj["source_lang"]?.Value<string>() ?? string.Empty,
-                        obj["target_lang"]?.Value<string>() ?? string.Empty
+                        obj["target_lang"]?.Value<string>() ?? string.Empty,
+                        obj["detected_lang"]?.Value<string>()   // Whisper 자동감지 시 실제 감지 언어
                     );
                     ResultReceived?.Invoke(this, result);
                     break;
@@ -177,4 +178,10 @@ public sealed class AiEngineClient : IDisposable
     }
 }
 
-public record TranslationResult(string Text, string Translation, string SourceLang, string TargetLang);
+public record TranslationResult(
+    string Text,
+    string Translation,
+    string SourceLang,
+    string TargetLang,
+    string? DetectedLang = null   // Whisper 자동감지 시 실제로 감지된 언어 코드
+);

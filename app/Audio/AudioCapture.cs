@@ -1,16 +1,17 @@
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 namespace DiscordVoiceTranslator.Audio;
 
 /// <summary>
-/// Captures audio from the default loopback (WASAPI) or microphone device
-/// and fires events with raw PCM float32 chunks at 16kHz mono.
+/// Captures audio from a WASAPI loopback device (system audio or VB-Audio Virtual Cable)
+/// or from a microphone, and fires events with PCM float32 chunks at 16kHz mono.
 /// </summary>
 public sealed class AudioCapture : IDisposable
 {
     public const int SampleRate = 16000;
     public const int Channels = 1;
-    public const int ChunkMs = 30; // VAD chunk size in milliseconds
+    public const int ChunkMs = 30; // VAD 청크 크기 (ms)
 
     private readonly int _chunkSamples;
     private IWaveIn? _waveIn;
@@ -25,8 +26,66 @@ public sealed class AudioCapture : IDisposable
         _chunkSamples = SampleRate * ChunkMs / 1000;
     }
 
+    // ─────────────────────────────────────────────────────
+    //  디바이스 열거
+    // ─────────────────────────────────────────────────────
+
     /// <summary>
-    /// Start capturing from the system loopback (what you hear).
+    /// 현재 활성화된 모든 WASAPI 재생(Render) 디바이스 목록을 반환합니다.
+    /// VB-Audio Virtual Cable은 "CABLE Output (VB-Audio Virtual Cable)"으로 표시됩니다.
+    /// </summary>
+    public static List<AudioDeviceInfo> GetLoopbackDevices()
+    {
+        var list = new List<AudioDeviceInfo>
+        {
+            AudioDeviceInfo.SystemDefault, // 시스템 기본 루프백
+        };
+
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var dev in devices)
+            {
+                bool isVbCable = dev.FriendlyName.Contains("CABLE", StringComparison.OrdinalIgnoreCase)
+                              || dev.FriendlyName.Contains("VB-Audio", StringComparison.OrdinalIgnoreCase)
+                              || dev.FriendlyName.Contains("Virtual Cable", StringComparison.OrdinalIgnoreCase);
+                list.Add(new AudioDeviceInfo(dev.ID, dev.FriendlyName, isVbCable));
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[AudioCapture] Device enumeration failed: {ex.Message}");
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 마이크(입력) 디바이스 목록을 반환합니다.
+    /// </summary>
+    public static List<AudioDeviceInfo> GetMicrophoneDevices()
+    {
+        var list = new List<AudioDeviceInfo>
+        {
+            new(null, "기본 마이크 (Default Microphone)", false),
+        };
+
+        for (int i = 0; i < WaveIn.DeviceCount; i++)
+        {
+            var caps = WaveIn.GetCapabilities(i);
+            list.Add(new AudioDeviceInfo(i.ToString(), caps.ProductName, false));
+        }
+
+        return list;
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  캡처 시작
+    // ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// 시스템 기본 루프백으로 캡처를 시작합니다.
     /// </summary>
     public void StartLoopback()
     {
@@ -39,7 +98,37 @@ public sealed class AudioCapture : IDisposable
     }
 
     /// <summary>
-    /// Start capturing from the default microphone.
+    /// 특정 WASAPI 재생 디바이스(VB-Audio Virtual Cable 등)의 루프백으로 캡처를 시작합니다.
+    /// deviceId: MMDevice.ID (null이면 시스템 기본)
+    /// </summary>
+    public void StartLoopbackOnDevice(string? deviceId)
+    {
+        if (deviceId is null)
+        {
+            StartLoopback();
+            return;
+        }
+
+        StopCapture();
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            var device = enumerator.GetDevice(deviceId);
+            _waveIn = new WasapiLoopbackCapture(device);
+            _captureFormat = _waveIn.WaveFormat;
+            _waveIn.DataAvailable += OnDataAvailable;
+            _waveIn.StartRecording();
+            IsCapturing = true;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"디바이스 '{deviceId}' 캡처 실패: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// 마이크 입력으로 캡처를 시작합니다.
+    /// deviceNumber: WaveIn 디바이스 번호 (-1이면 기본)
     /// </summary>
     public void StartMicrophone(int deviceNumber = 0)
     {
@@ -48,7 +137,7 @@ public sealed class AudioCapture : IDisposable
         _waveIn = new WaveInEvent
         {
             WaveFormat = format,
-            DeviceNumber = deviceNumber,
+            DeviceNumber = Math.Max(0, deviceNumber),
             BufferMilliseconds = ChunkMs,
         };
         _captureFormat = format;
@@ -60,26 +149,37 @@ public sealed class AudioCapture : IDisposable
     public void StopCapture()
     {
         if (_waveIn is null) return;
-        _waveIn.StopRecording();
-        _waveIn.DataAvailable -= OnDataAvailable;
-        _waveIn.Dispose();
-        _waveIn = null;
-        _resampleBuffer.Clear();
-        IsCapturing = false;
+        try
+        {
+            _waveIn.StopRecording();
+            _waveIn.DataAvailable -= OnDataAvailable;
+            _waveIn.Dispose();
+        }
+        catch { /* 이미 중지된 경우 무시 */ }
+        finally
+        {
+            _waveIn = null;
+            _resampleBuffer.Clear();
+            IsCapturing = false;
+        }
     }
+
+    // ─────────────────────────────────────────────────────
+    //  오디오 처리
+    // ─────────────────────────────────────────────────────
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (_captureFormat is null) return;
+        if (_captureFormat is null || e.BytesRecorded == 0) return;
 
-        // Convert bytes to float32 samples, then resample/downmix to 16kHz mono
+        // 바이트 → float32 → 모노 다운믹스 → 16kHz 리샘플
         var floats = BytesToFloat32(e.Buffer, e.BytesRecorded, _captureFormat);
         var mono = DownmixToMono(floats, _captureFormat.Channels);
         var resampled = Resample(mono, _captureFormat.SampleRate, SampleRate);
 
         _resampleBuffer.AddRange(resampled);
 
-        // Fire chunks of exactly _chunkSamples
+        // _chunkSamples 단위로 이벤트 발생
         while (_resampleBuffer.Count >= _chunkSamples)
         {
             var chunk = _resampleBuffer.GetRange(0, _chunkSamples).ToArray();
