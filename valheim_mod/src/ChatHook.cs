@@ -29,11 +29,16 @@ public static class ChatHook
         // 브릿지 큐 처리
         Plugin.Instance.Bridge.ProcessMainThreadQueue();
 
-        // 아웃고잉 채팅 전송
+        // 아웃고잉 채팅 전송 (선택된 채팅 타입 적용)
         while (_outgoingQueue.TryDequeue(out var text))
         {
             if (Chat.instance != null)
-                Chat.instance.SendText(Talker.Type.Normal, text);
+            {
+                var talkerType = TranslationChatUI.SelectedSendType == TranslationChatUI.ChatSendType.Shout
+                    ? Talker.Type.Shout
+                    : Talker.Type.Normal;
+                Chat.instance.SendText(talkerType, text);
+            }
         }
     }
 
