@@ -1,14 +1,19 @@
+using System.Speech.Synthesis;
 using DiscordVoiceTranslator.Audio;
+using DiscordVoiceTranslator.Network;
 using DiscordVoiceTranslator.Overlay;
 using Newtonsoft.Json;
 
 namespace DiscordVoiceTranslator.UI;
 
 /// <summary>
-/// 메인 컨트롤 패널.
-/// - 입력 언어: 자동감지(Whisper) 또는 7개 핵심 언어 수동 선택
-/// - 출력 언어: OS 자동감지 또는 7개 핵심 언어 수동 선택
-/// - 캡처 장치: VB-Audio Virtual Cable 포함 WASAPI 루프백 디바이스 목록
+/// 발헤임 음성 번역 채팅 자동화 메인 폼.
+///
+/// 기능:
+/// - 마이크 음성 → STT → 번역 → 발헤임 공개 채팅 자동 전송
+/// - 발헤임 채팅 수신 → 번역 → PC 창에 표시 + 플레이어별 TTS 읽기
+/// - 번역 엔진 선택: 빠른(argostranslate) / 정확(NLLB)
+/// - 발헤임 인게임 번역 채팅창 연동 (ValheimBridge via TCP:7891)
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -18,31 +23,66 @@ public sealed class MainForm : Form
 
     private AudioCapture? _capture;
     private AiEngineClient? _engine;
+    private ValheimBridge? _bridge;
     private SubtitleOverlay? _overlay;
 
+    // 플레이어별 TTS (플레이어명 → SpeechSynthesizer)
+    private readonly Dictionary<string, SpeechSynthesizer> _playerSynths = new();
+    private List<System.Speech.Synthesis.VoiceInfo> _availableVoices = new();
+
     // ── 컨트롤 ──────────────────────────────────────────────────────────────
-    private ComboBox _cmbSourceLang = null!;
-    private ComboBox _cmbTargetLang = null!;
-    private ComboBox _cmbDevice = null!;
-    private Button _btnRefreshDevices = null!;
-    private Button _btnStart = null!;
-    private Button _btnStop = null!;
-    private Label _lblStatus = null!;
-    private Label _lblDetectedLang = null!;
+    // 섹션1: 음성 → 발헤임
+    private ComboBox _cmbMic = null!;
+    private Button _btnRefreshMic = null!;
+    private ComboBox _cmbVoiceSrcLang = null!;
+    private ComboBox _cmbVoiceTgtLang = null!;
+    private Button _btnStartVoice = null!;
+    private Button _btnStopVoice = null!;
+
+    // 섹션2: 발헤임 수신 → 번역
+    private ComboBox _cmbReceiveLang = null!;
+    private Button _btnToggleTts = null!;
+    private Label _lblValheimStatus = null!;
+    private RadioButton _rbFast = null!;
+    private RadioButton _rbAccurate = null!;
+
+    // 섹션3: 번역 채팅 로그
+    private RichTextBox _rtbChat = null!;
+
+    // 섹션4: 플레이어 TTS 음성 설정
+    private ListBox _lstPlayers = null!;
+    private ComboBox _cmbVoice = null!;
+    private Button _btnTestVoice = null!;
+
+    // 섹션5: 디버그 로그
     private RichTextBox _rtbLog = null!;
 
-    // 캡처 디바이스 목록 (device combo 인덱스와 1:1)
-    private List<AudioDeviceInfo> _deviceList = new();
+    // 마이크 장치 목록
+    private List<AudioDeviceInfo> _micList = new();
 
-    // ── 색상 팔레트 (Discord 스타일) ─────────────────────────────────────
-    private static readonly Color BgDark    = Color.FromArgb(32,  34,  37);
-    private static readonly Color BgMid     = Color.FromArgb(47,  49,  54);
-    private static readonly Color BgLight   = Color.FromArgb(54,  57,  63);
-    private static readonly Color AccentGreen  = Color.FromArgb(87,  166, 78);
-    private static readonly Color AccentRed    = Color.FromArgb(220, 53,  69);
-    private static readonly Color AccentBlue   = Color.FromArgb(88,  101, 242);
-    private static readonly Color TextMain  = Color.FromArgb(220, 221, 222);
-    private static readonly Color TextSub   = Color.FromArgb(148, 155, 164);
+    // 플레이어별 색상 (채팅 로그 구분)
+    private readonly Color[] _playerColors =
+    {
+        Color.FromArgb(116, 185, 255),
+        Color.FromArgb(253, 203, 110),
+        Color.FromArgb(85,  239, 196),
+        Color.FromArgb(255, 118, 117),
+        Color.FromArgb(162, 155, 254),
+        Color.FromArgb(250, 177, 160),
+    };
+    private readonly Dictionary<string, Color> _playerColorMap = new();
+    private int _colorIndex;
+
+    // ── 색상 팔레트 ──────────────────────────────────────────────────────────
+    private static readonly Color BgDark   = Color.FromArgb(32,  34,  37);
+    private static readonly Color BgMid    = Color.FromArgb(47,  49,  54);
+    private static readonly Color BgLight  = Color.FromArgb(54,  57,  63);
+    private static readonly Color AccentGreen = Color.FromArgb(87,  166, 78);
+    private static readonly Color AccentRed   = Color.FromArgb(220, 53,  69);
+    private static readonly Color AccentBlue  = Color.FromArgb(88,  101, 242);
+    private static readonly Color AccentOrange = Color.FromArgb(230, 126, 34);
+    private static readonly Color TextMain = Color.FromArgb(220, 221, 222);
+    private static readonly Color TextSub  = Color.FromArgb(148, 155, 164);
 
     public MainForm(AppSettings settings, string settingsPath, string mainPyPath)
     {
@@ -50,8 +90,10 @@ public sealed class MainForm : Form
         _settingsPath = settingsPath;
         _mainPyPath = mainPyPath;
         BuildUI();
-        RefreshDeviceList();
+        RefreshMicList();
+        LoadAvailableVoices();
         ApplyStoredSettings();
+        StartValheimBridge();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -60,127 +102,308 @@ public sealed class MainForm : Form
 
     private void BuildUI()
     {
-        Text = "Discord Voice Translator";
-        Size = new Size(520, 500);
-        MinimumSize = new Size(520, 500);
+        Text = "Valheim Voice Chat Translator";
+        Size = new Size(780, 760);
+        MinimumSize = new Size(780, 760);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = BgDark;
         ForeColor = TextMain;
 
-        // ── 최상단 헤더 ──────────────────────────────────────────────────
+        // ── 헤더 ──────────────────────────────────────────────────────────
         var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = BgMid };
         var lblTitle = new Label
         {
-            Text = "🎙 Discord Voice Translator",
+            Text = "⚔  Valheim Voice Chat Translator",
             Font = new Font("Segoe UI", 13f, FontStyle.Bold),
-            ForeColor = AccentBlue,
+            ForeColor = AccentOrange,
             AutoSize = true,
             Location = new Point(16, 12),
         };
         header.Controls.Add(lblTitle);
 
-        // ── 설정 패널 ─────────────────────────────────────────────────────
-        var settingsPanel = new Panel
+        // ── 탭 컨트롤 (전체 레이아웃) ──────────────────────────────────
+        var tabControl = new TabControl
         {
-            Dock = DockStyle.Top,
-            Height = 240,
+            Dock = DockStyle.Fill,
             BackColor = BgDark,
-            Padding = new Padding(16, 12, 16, 8),
+            Font = new Font("Segoe UI", 9.5f),
         };
 
-        // 말하는 언어 (입력 / Source)
-        var lblSrc = MakeLabel("🗣  말하는 언어 (입력)", bold: true);
-        lblSrc.Location = new Point(16, 14);
-        var lblSrcHint = MakeLabel("말하는 사람의 언어를 선택하세요. 자동 감지 시 Whisper가 언어를 판별합니다.", sub: true);
-        lblSrcHint.Location = new Point(16, 34);
-        lblSrcHint.Width = 470;
-        _cmbSourceLang = MakeLangCombo();
-        _cmbSourceLang.Location = new Point(16, 55);
-        _cmbSourceLang.Width = 460;
+        var tabMain = new TabPage("번역 채팅") { BackColor = BgDark, ForeColor = TextMain };
+        var tabVoice = new TabPage("음성 설정") { BackColor = BgDark, ForeColor = TextMain };
+        var tabLog = new TabPage("디버그 로그") { BackColor = BgDark, ForeColor = TextMain };
 
-        // 듣는 언어 (출력 / Target)
-        var lblTgt = MakeLabel("👂  듣는 언어 (출력)", bold: true);
-        lblTgt.Location = new Point(16, 94);
-        var lblTgtHint = MakeLabel("내가 받아볼 번역 언어입니다. 'OS 자동' 선택 시 시스템 언어로 자동 설정됩니다.", sub: true);
-        lblTgtHint.Location = new Point(16, 114);
-        lblTgtHint.Width = 470;
-        _cmbTargetLang = MakeLangCombo(includeOsAuto: true);
-        _cmbTargetLang.Location = new Point(16, 135);
-        _cmbTargetLang.Width = 460;
+        tabControl.TabPages.Add(tabMain);
+        tabControl.TabPages.Add(tabVoice);
+        tabControl.TabPages.Add(tabLog);
 
-        // 캡처 장치
-        var lblDev = MakeLabel("🔊  캡처 장치", bold: true);
-        lblDev.Location = new Point(16, 174);
-        var lblDevHint = MakeLabel("VB-Audio Virtual Cable 사용 시 'CABLE Output' 장치를 선택하세요.", sub: true);
-        lblDevHint.Location = new Point(16, 194);
-        lblDevHint.Width = 470;
-        _cmbDevice = new ComboBox
+        BuildMainTab(tabMain);
+        BuildVoiceTab(tabVoice);
+        BuildLogTab(tabLog);
+
+        Controls.Add(tabControl);
+        Controls.Add(header);
+
+        FormClosing += (_, _) => { SaveSettings(); CleanUp(); };
+    }
+
+    /// <summary>탭1: 번역 채팅 (수신 설정 + 채팅 로그 + 플레이어 TTS)</summary>
+    private void BuildMainTab(TabPage tab)
+    {
+        int y = 10;
+
+        // ── 섹션2: 발헤임 채팅 수신 → 번역 ─────────────────────────────
+        var lblSec2 = MakeLabel("📡  발헤임 채팅 수신 → 번역", bold: true);
+        lblSec2.Location = new Point(12, y);
+        tab.Controls.Add(lblSec2);
+        y += 22;
+
+        // 수신 번역 언어
+        var lblRcvLang = MakeLabel("번역 언어 (수신 채팅을 이 언어로 번역):", sub: true);
+        lblRcvLang.Location = new Point(12, y);
+        tab.Controls.Add(lblRcvLang);
+        y += 18;
+
+        _cmbReceiveLang = MakeLangCombo();
+        _cmbReceiveLang.Location = new Point(12, y);
+        _cmbReceiveLang.Width = 220;
+        tab.Controls.Add(_cmbReceiveLang);
+
+        // TTS 토글
+        _btnToggleTts = new Button
         {
+            Text = "🔊 TTS 켜기",
+            Location = new Point(242, y - 2),
+            Size = new Size(110, 26),
+            BackColor = _settings.TtsEnabled ? AccentGreen : BgLight,
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+        };
+        _btnToggleTts.FlatAppearance.BorderSize = 0;
+        _btnToggleTts.Click += OnToggleTts;
+        tab.Controls.Add(_btnToggleTts);
+        UpdateTtsButton();
+
+        // 발헤임 연결 상태
+        _lblValheimStatus = new Label
+        {
+            Text = "⬤  발헤임 미연결",
+            ForeColor = TextSub,
+            Font = new Font("Segoe UI", 9f),
+            Location = new Point(364, y),
+            AutoSize = true,
+        };
+        tab.Controls.Add(_lblValheimStatus);
+        y += 34;
+
+        // 번역 엔진 선택
+        var lblEngine = MakeLabel("번역 엔진:", sub: true);
+        lblEngine.Location = new Point(12, y);
+        tab.Controls.Add(lblEngine);
+
+        _rbFast = new RadioButton
+        {
+            Text = "⚡ 빠른 응답 (argostranslate, 오프라인)",
+            Location = new Point(80, y - 2),
+            AutoSize = true,
+            ForeColor = TextMain,
+            BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", 9f),
+        };
+        _rbAccurate = new RadioButton
+        {
+            Text = "🎯 정확도 우선 (NLLB-200)",
+            Location = new Point(350, y - 2),
+            AutoSize = true,
+            ForeColor = TextMain,
+            BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", 9f),
+        };
+        _rbFast.CheckedChanged += OnEngineChanged;
+        _rbAccurate.CheckedChanged += OnEngineChanged;
+        tab.Controls.Add(_rbFast);
+        tab.Controls.Add(_rbAccurate);
+        y += 28;
+
+        // ── 구분선 ────────────────────────────────────────────────────────
+        var sep1 = new Panel { Location = new Point(12, y), Size = new Size(740, 1), BackColor = BgLight };
+        tab.Controls.Add(sep1);
+        y += 8;
+
+        // ── 섹션3: 번역 채팅 로그 ────────────────────────────────────────
+        var lblSec3 = MakeLabel("💬  번역 채팅 로그", bold: true);
+        lblSec3.Location = new Point(12, y);
+        tab.Controls.Add(lblSec3);
+        y += 22;
+
+        _rtbChat = new RichTextBox
+        {
+            Location = new Point(12, y),
+            Size = new Size(740, 220),
+            BackColor = BgMid,
+            ForeColor = TextMain,
+            ReadOnly = true,
+            Font = new Font("Malgun Gothic", 9.5f),
+            BorderStyle = BorderStyle.FixedSingle,
+            ScrollBars = RichTextBoxScrollBars.Vertical,
+        };
+        tab.Controls.Add(_rtbChat);
+        y += 228;
+
+        // ── 구분선 ────────────────────────────────────────────────────────
+        var sep2 = new Panel { Location = new Point(12, y), Size = new Size(740, 1), BackColor = BgLight };
+        tab.Controls.Add(sep2);
+        y += 8;
+
+        // ── 섹션4: 플레이어별 TTS 음성 ───────────────────────────────────
+        var lblSec4 = MakeLabel("🎭  플레이어별 TTS 음성", bold: true);
+        lblSec4.Location = new Point(12, y);
+        tab.Controls.Add(lblSec4);
+        y += 22;
+
+        var lblPlayers = MakeLabel("접속 플레이어:", sub: true);
+        lblPlayers.Location = new Point(12, y);
+        tab.Controls.Add(lblPlayers);
+
+        var lblVoiceSel = MakeLabel("배정 음성:", sub: true);
+        lblVoiceSel.Location = new Point(230, y);
+        tab.Controls.Add(lblVoiceSel);
+        y += 18;
+
+        _lstPlayers = new ListBox
+        {
+            Location = new Point(12, y),
+            Size = new Size(200, 100),
+            BackColor = BgLight,
+            ForeColor = TextMain,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 9f),
+        };
+        _lstPlayers.SelectedIndexChanged += OnPlayerSelected;
+        tab.Controls.Add(_lstPlayers);
+
+        _cmbVoice = new ComboBox
+        {
+            Location = new Point(222, y),
+            Size = new Size(340, 26),
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(16, 215),
-            Width = 390,
+            BackColor = BgLight,
+            ForeColor = TextMain,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9f),
+        };
+        _cmbVoice.SelectedIndexChanged += OnVoiceSelected;
+        tab.Controls.Add(_cmbVoice);
+
+        _btnTestVoice = new Button
+        {
+            Text = "▶ 테스트",
+            Location = new Point(572, y - 2),
+            Size = new Size(80, 28),
+            BackColor = AccentBlue,
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+        };
+        _btnTestVoice.FlatAppearance.BorderSize = 0;
+        _btnTestVoice.Click += OnTestVoice;
+        tab.Controls.Add(_btnTestVoice);
+    }
+
+    /// <summary>탭2: 음성 설정 (마이크 → 발헤임 채팅 전송)</summary>
+    private void BuildVoiceTab(TabPage tab)
+    {
+        int y = 10;
+
+        var lblSec1 = MakeLabel("🎙  내 음성 → 발헤임 채팅 전송", bold: true);
+        lblSec1.Location = new Point(12, y);
+        tab.Controls.Add(lblSec1);
+        y += 22;
+
+        // 마이크 장치
+        var lblMic = MakeLabel("마이크 장치:", sub: true);
+        lblMic.Location = new Point(12, y);
+        tab.Controls.Add(lblMic);
+        y += 18;
+
+        _cmbMic = new ComboBox
+        {
+            Location = new Point(12, y),
+            Width = 560,
+            DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = BgLight,
             ForeColor = TextMain,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9.5f),
         };
-        _btnRefreshDevices = new Button
+        tab.Controls.Add(_cmbMic);
+
+        _btnRefreshMic = new Button
         {
             Text = "↺",
-            Location = new Point(412, 213),
-            Size = new Size(64, 26),
+            Location = new Point(582, y - 2),
+            Size = new Size(64, 28),
             BackColor = BgLight,
             ForeColor = TextSub,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 10f),
-            ToolTipText = "장치 목록 새로고침",
         };
-        _btnRefreshDevices.FlatAppearance.BorderColor = BgLight;
-        _btnRefreshDevices.Click += (_, _) => { RefreshDeviceList(); Log("[장치 목록 새로고침]"); };
+        _btnRefreshMic.FlatAppearance.BorderColor = BgLight;
+        _btnRefreshMic.Click += (_, _) => { RefreshMicList(); Log("[마이크 목록 새로고침]"); };
+        tab.Controls.Add(_btnRefreshMic);
+        y += 34;
 
-        settingsPanel.Controls.AddRange(new Control[]
-        {
-            lblSrc, lblSrcHint, _cmbSourceLang,
-            lblTgt, lblTgtHint, _cmbTargetLang,
-            lblDev, lblDevHint, _cmbDevice, _btnRefreshDevices,
-        });
+        // 음성 입력 언어
+        var lblSrcLang = MakeLabel("내가 말하는 언어:", sub: true);
+        lblSrcLang.Location = new Point(12, y);
+        tab.Controls.Add(lblSrcLang);
 
-        // ── 버튼 패널 ─────────────────────────────────────────────────────
-        var btnPanel = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = BgDark, Padding = new Padding(16, 8, 16, 0) };
-        _btnStart = MakeButton("▶  번역 시작", AccentGreen);
-        _btnStop  = MakeButton("■  중지",      AccentRed);
-        _btnStop.Enabled = false;
-        _btnStart.Location = new Point(16, 10);
-        _btnStop.Location  = new Point(144, 10);
-        _btnStart.Click += OnStart;
-        _btnStop.Click  += OnStop;
-        btnPanel.Controls.Add(_btnStart);
-        btnPanel.Controls.Add(_btnStop);
+        var lblTgtLang = MakeLabel("발헤임 전송 언어:", sub: true);
+        lblTgtLang.Location = new Point(340, y);
+        tab.Controls.Add(lblTgtLang);
+        y += 18;
 
-        // ── 상태 표시줄 ───────────────────────────────────────────────────
-        var statusPanel = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = BgMid };
-        _lblStatus = new Label
-        {
-            Text = "⬤  대기 중",
-            ForeColor = TextSub,
-            Font = new Font("Segoe UI", 9f),
-            Location = new Point(12, 8),
-            AutoSize = true,
-        };
-        _lblDetectedLang = new Label
-        {
-            Text = "",
-            ForeColor = AccentBlue,
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
-            Location = new Point(200, 8),
-            AutoSize = true,
-        };
-        statusPanel.Controls.Add(_lblStatus);
-        statusPanel.Controls.Add(_lblDetectedLang);
+        _cmbVoiceSrcLang = MakeLangCombo(includeAutoDetect: true);
+        _cmbVoiceSrcLang.Location = new Point(12, y);
+        _cmbVoiceSrcLang.Width = 310;
+        tab.Controls.Add(_cmbVoiceSrcLang);
 
-        // ── 로그 ─────────────────────────────────────────────────────────
+        _cmbVoiceTgtLang = MakeLangCombo();
+        _cmbVoiceTgtLang.Location = new Point(340, y);
+        _cmbVoiceTgtLang.Width = 310;
+        tab.Controls.Add(_cmbVoiceTgtLang);
+        y += 36;
+
+        // 시작/중지
+        _btnStartVoice = MakeButton("▶  음성 번역 시작", AccentGreen);
+        _btnStopVoice  = MakeButton("■  중지",          AccentRed);
+        _btnStopVoice.Enabled = false;
+        _btnStartVoice.Location = new Point(12, y);
+        _btnStopVoice.Location  = new Point(142, y);
+        _btnStartVoice.Click += OnStartVoice;
+        _btnStopVoice.Click  += OnStopVoice;
+        tab.Controls.Add(_btnStartVoice);
+        tab.Controls.Add(_btnStopVoice);
+        y += 44;
+
+        // 안내
+        var lblHint = MakeLabel(
+            "※ 시작하면 마이크 음성을 인식하여 선택한 언어로 번역 후\n" +
+            "   발헤임 공개 채팅에 자동 전송합니다. 발헤임 BepInEx 모드 필요.",
+            sub: true);
+        lblHint.Location = new Point(12, y);
+        lblHint.Width = 650;
+        lblHint.AutoSize = false;
+        lblHint.Height = 36;
+        tab.Controls.Add(lblHint);
+    }
+
+    /// <summary>탭3: 디버그 로그</summary>
+    private void BuildLogTab(TabPage tab)
+    {
         _rtbLog = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -191,123 +414,98 @@ public sealed class MainForm : Form
             BorderStyle = BorderStyle.None,
             ScrollBars = RichTextBoxScrollBars.Vertical,
         };
-
-        // Controls 추가 순서 = 역순 (Dock.Top은 마지막 추가가 맨 위)
-        Controls.Add(_rtbLog);
-        Controls.Add(statusPanel);
-        Controls.Add(btnPanel);
-        Controls.Add(settingsPanel);
-        Controls.Add(header);
-
-        FormClosing += (_, _) => { SaveSettings(); CleanUp(); };
+        tab.Controls.Add(_rtbLog);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  디바이스 목록 관리
+    //  초기화
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void RefreshDeviceList()
+    private void RefreshMicList()
     {
-        _deviceList = AudioCapture.GetLoopbackDevices();
-
-        _cmbDevice.Items.Clear();
-        foreach (var dev in _deviceList)
-            _cmbDevice.Items.Add(dev.ToString());
-
-        // VB-Cable이 있으면 자동 선택
-        int vbIdx = _deviceList.FindIndex(d => d.IsVirtualCable);
-        if (vbIdx >= 0)
-        {
-            _cmbDevice.SelectedIndex = vbIdx;
-            Log($"[VB-Audio] VB-Cable 자동 감지: {_deviceList[vbIdx].Name}");
-        }
-        else
-        {
-            _cmbDevice.SelectedIndex = 0; // 시스템 기본
-        }
+        _micList = AudioCapture.GetMicrophoneDevices();
+        _cmbMic.Items.Clear();
+        foreach (var dev in _micList)
+            _cmbMic.Items.Add(dev.ToString());
+        if (_cmbMic.Items.Count > 0)
+            _cmbMic.SelectedIndex = Math.Max(0, _settings.MicrophoneDevice);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  언어 콤보박스 구성
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// <param name="includeOsAuto">
-    /// true면 "OS 자동" 항목 추가 (target용).
-    /// false면 "자동 감지 (Whisper)" 항목 추가 (source용).
-    /// </param>
-    private ComboBox MakeLangCombo(bool includeOsAuto = false)
+    private void LoadAvailableVoices()
     {
-        var cb = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            BackColor = BgLight,
-            ForeColor = TextMain,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9.5f),
-            Height = 26,
-        };
+        using var synth = new SpeechSynthesizer();
+        _availableVoices = synth.GetInstalledVoices()
+            .Where(v => v.Enabled)
+            .Select(v => v.VoiceInfo)
+            .ToList();
 
-        if (includeOsAuto)
-        {
-            // target: OS 자동 + 7개 언어
-            cb.Items.Add(new LangItem("auto_os", "🖥  OS 언어 자동 설정", ""));
-        }
-        else
-        {
-            // source: Whisper 자동감지 + 7개 언어
-            cb.Items.Add(SupportedLanguages.AutoDetect);
-        }
-
-        foreach (var lang in SupportedLanguages.CoreLanguages)
-            cb.Items.Add(lang);
-
-        cb.SelectedIndex = 0;
-        return cb;
+        _cmbVoice.Items.Clear();
+        foreach (var v in _availableVoices)
+            _cmbVoice.Items.Add($"{v.Name} ({v.Culture.TwoLetterISOLanguageName})");
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  저장된 설정 적용 (초기화 시)
-    // ─────────────────────────────────────────────────────────────────────────
 
     private void ApplyStoredSettings()
     {
-        SelectLang(_cmbSourceLang, _settings.SourceLang);
-        SelectLang(_cmbTargetLang, _settings.TargetLang == "auto" ? "auto_os" : _settings.TargetLang);
+        SelectLang(_cmbReceiveLang, _settings.ChatReceiveLang);
+        SelectLang(_cmbVoiceSrcLang, _settings.VoiceSourceLang);
+        SelectLang(_cmbVoiceTgtLang, _settings.VoiceTargetLang);
 
-        // 저장된 캡처 디바이스 복원
-        if (_settings.CaptureDeviceId is not null)
-        {
-            int idx = _deviceList.FindIndex(d => d.Id == _settings.CaptureDeviceId);
-            if (idx >= 0) _cmbDevice.SelectedIndex = idx;
-        }
+        _rbFast.Checked     = _settings.TranslationEngine == "argos";
+        _rbAccurate.Checked = _settings.TranslationEngine == "nllb";
+        if (!_rbFast.Checked && !_rbAccurate.Checked) _rbFast.Checked = true;
+
+        UpdateTtsButton();
     }
 
-    private static void SelectLang(ComboBox cb, string code)
+    // ─────────────────────────────────────────────────────────────────────────
+    //  ValheimBridge 시작
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void StartValheimBridge()
     {
-        for (int i = 0; i < cb.Items.Count; i++)
+        _bridge = new ValheimBridge(_settings.ValheimBridgePort);
+        _bridge.ConnectionChanged += (_, connected) =>
         {
-            var item = cb.Items[i] as LangItem;
-            if (item?.Code == code) { cb.SelectedIndex = i; return; }
-        }
+            if (InvokeRequired) { Invoke(() => OnBridgeConnectionChanged(connected)); return; }
+            OnBridgeConnectionChanged(connected);
+        };
+        _bridge.ChatReceived += OnValheimChatReceived;
+        _bridge.Start();
+        Log($"[ValheimBridge] TCP 서버 시작됨 (포트 {_settings.ValheimBridgePort})");
+    }
+
+    private void OnBridgeConnectionChanged(bool connected)
+    {
+        _lblValheimStatus.Text = connected ? "⬤  발헤임 연결됨" : "⬤  발헤임 미연결";
+        _lblValheimStatus.ForeColor = connected ? AccentGreen : TextSub;
+        Log(connected ? "[발헤임] 모드 연결됨" : "[발헤임] 모드 연결 끊김");
+    }
+
+    private void OnValheimChatReceived(object? sender, ChatReceivedArgs e)
+    {
+        // 수신 채팅 → 번역 요청
+        if (_engine is null || !_engine.IsReady) return;
+
+        string targetLang = GetSelectedLangCode(_cmbReceiveLang);
+        string requestId = Guid.NewGuid().ToString("N")[..8];
+        _engine.SendTextTranslation(e.Text, "auto", targetLang, requestId, e.Author);
+        Log($"[수신] [{e.Author}] {e.Text}");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Start / Stop
+    //  음성 번역 시작/중지
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void OnStart(object? sender, EventArgs e)
+    private void OnStartVoice(object? sender, EventArgs e)
     {
         try
         {
-            string sourceLang = GetSelectedLangCode(_cmbSourceLang);
-            string targetLang = ResolveTargetLang();
-            var selectedDevice = _deviceList.Count > 0
-                ? _deviceList[Math.Max(0, _cmbDevice.SelectedIndex)]
-                : AudioDeviceInfo.SystemDefault;
+            string voiceSrc = GetSelectedLangCode(_cmbVoiceSrcLang);
+            string voiceTgt = GetSelectedLangCode(_cmbVoiceTgtLang);
+            int micIdx = _cmbMic.SelectedIndex >= 0 ? _cmbMic.SelectedIndex : 0;
 
-            Log($"[시작] 입력: {sourceLang} / 출력: {targetLang} / 장치: {selectedDevice.Name}");
+            Log($"[음성 시작] 입력: {voiceSrc} / 출력: {voiceTgt} / 마이크: {micIdx}");
 
-            // 오버레이
             _overlay = new SubtitleOverlay
             {
                 DisplayDurationMs = _settings.SubtitleDurationMs,
@@ -315,94 +513,52 @@ public sealed class MainForm : Form
             };
             _overlay.Show();
 
-            // AI 엔진
             _engine = new AiEngineClient();
+
+            // 음성 STT 결과 → 발헤임 전송
             _engine.ResultReceived += (_, result) =>
             {
-                // Whisper가 실제 감지한 언어를 UI에 표시
-                string detectedLabel = result.DetectedLang != null && result.DetectedLang != sourceLang
-                    ? $"[감지: {result.DetectedLang}]"
-                    : string.Empty;
-
-                Log($"  원문 [{result.SourceLang}]: {result.Text}");
-                Log($"  번역 [{result.TargetLang}]: {result.Translation}");
-
+                Log($"  [STT] {result.Text}  →  {result.Translation}");
                 _overlay?.ShowSubtitle(result.Text, result.Translation);
-                SetDetectedLang(detectedLabel);
+                _bridge?.SendChat(result.Translation);
             };
+
+            // 텍스트 번역 결과 (발헤임 채팅 수신) → 로그 + TTS
+            _engine.TextResultReceived += OnTextTranslationResult;
+
             _engine.ErrorReceived += (_, msg) => Log($"[오류] {msg}");
             _engine.EngineReady += (_, _) =>
             {
-                SetStatus("⬤  실행 중", AccentGreen);
-                _engine.SendConfig(sourceLang, targetLang, _settings.AiEngine.VadThreshold);
+                string engine = _settings.TranslationEngine;
+                _engine.SendConfig(voiceSrc, voiceTgt, _settings.AiEngine.VadThreshold);
+                // 번역 엔진 설정도 전달
+                _engine.SendEngineConfig(engine);
             };
             _engine.Start(_settings.AiEngine.PythonExe, _mainPyPath);
 
-            // 오디오 캡처
             _capture = new AudioCapture();
             _capture.AudioChunkReady += (_, chunk) =>
-                _engine.SendAudio(chunk, sourceLang, targetLang);
+                _engine.SendAudio(chunk, voiceSrc, voiceTgt);
+            _capture.StartMicrophone(micIdx);
 
-            StartCapture(selectedDevice);
+            _btnStartVoice.Enabled = false;
+            _btnStopVoice.Enabled = true;
 
-            SetStatus("⬤  AI 엔진 초기화 중...", TextSub);
-            _btnStart.Enabled = false;
-            _btnStop.Enabled = true;
-
-            // 설정 저장
-            _settings.SourceLang = sourceLang;
-            _settings.TargetLang = targetLang;
-            _settings.CaptureDeviceId = selectedDevice.Id;
-            _settings.CaptureDeviceName = selectedDevice.Name;
+            _settings.VoiceSourceLang = voiceSrc;
+            _settings.VoiceTargetLang = voiceTgt;
+            _settings.MicrophoneDevice = micIdx;
             SaveSettings();
         }
         catch (Exception ex)
         {
             MessageBox.Show($"시작 실패: {ex.Message}", "오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            CleanUp();
+            CleanUpVoice();
         }
     }
 
-    private void StartCapture(AudioDeviceInfo device)
-    {
-        if (device.Id is null)
-        {
-            // 시스템 기본 루프백
-            _capture!.StartLoopback();
-        }
-        else if (device.IsVirtualCable || _settings.CaptureMode != CaptureMode.Microphone)
-        {
-            // VB-Cable 또는 특정 WASAPI 루프백
-            _capture!.StartLoopbackOnDevice(device.Id);
-        }
-        else
-        {
-            int devNum = int.TryParse(device.Id, out int n) ? n : 0;
-            _capture!.StartMicrophone(devNum);
-        }
-    }
+    private void OnStopVoice(object? sender, EventArgs e) => CleanUpVoice();
 
-    /// <summary>target combo에서 실제 언어 코드를 반환합니다. "auto_os"이면 OS 언어를 감지.</summary>
-    private string ResolveTargetLang()
-    {
-        string code = GetSelectedLangCode(_cmbTargetLang);
-        if (code == "auto_os")
-        {
-            string detected = SupportedLanguages.DetectOsLanguage();
-            Log($"[OS 자동] 시스템 언어 감지: {detected}");
-            return detected;
-        }
-        return code;
-    }
-
-    private static string GetSelectedLangCode(ComboBox cb)
-    {
-        return (cb.SelectedItem as LangItem)?.Code ?? "auto";
-    }
-
-    private void OnStop(object? sender, EventArgs e) => CleanUp();
-
-    private void CleanUp()
+    private void CleanUpVoice()
     {
         _capture?.Dispose();
         _capture = null;
@@ -410,10 +566,148 @@ public sealed class MainForm : Form
         _engine = null;
         _overlay?.Close();
         _overlay = null;
-        SetStatus("⬤  대기 중", TextSub);
-        SetDetectedLang("");
-        if (_btnStart is not null) _btnStart.Enabled = true;
-        if (_btnStop  is not null) _btnStop.Enabled  = false;
+        if (_btnStartVoice is not null) _btnStartVoice.Enabled = true;
+        if (_btnStopVoice  is not null) _btnStopVoice.Enabled  = false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  텍스트 번역 결과 처리 (발헤임 채팅 수신)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void OnTextTranslationResult(object? sender, TextTranslationResult result)
+    {
+        if (InvokeRequired) { Invoke(() => OnTextTranslationResult(sender, result)); return; }
+
+        // 번역 채팅 로그에 표시
+        AppendChatLog(result.Author, result.Text, result.Translation);
+
+        // 인게임 번역 채팅창에도 전송
+        _bridge?.SendTranslationResult(result.Author, result.Text, result.Translation);
+
+        // TTS
+        if (_settings.TtsEnabled)
+            SpeakForPlayer(result.Author, result.Translation);
+    }
+
+    private void AppendChatLog(string author, string original, string translated)
+    {
+        if (!_playerColorMap.ContainsKey(author))
+        {
+            _playerColorMap[author] = _playerColors[_colorIndex % _playerColors.Length];
+            _colorIndex++;
+            AddPlayerToList(author);
+        }
+
+        var color = _playerColorMap[author];
+
+        _rtbChat.SelectionStart = _rtbChat.TextLength;
+        _rtbChat.SelectionLength = 0;
+        _rtbChat.SelectionColor = color;
+        _rtbChat.AppendText($"[{author}] ");
+        _rtbChat.SelectionColor = TextMain;
+        _rtbChat.AppendText($"{translated}");
+        _rtbChat.SelectionColor = TextSub;
+        _rtbChat.AppendText($"  ← {original}\n");
+        _rtbChat.SelectionColor = TextMain;
+        _rtbChat.ScrollToCaret();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  플레이어 TTS 음성 관리
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void AddPlayerToList(string playerName)
+    {
+        if (_lstPlayers.Items.Contains(playerName)) return;
+        _lstPlayers.Items.Add(playerName);
+
+        // 저장된 음성 복원 또는 자동 배정
+        string? savedVoice = _settings.PlayerVoiceMap.TryGetValue(playerName, out var v) ? v : null;
+        var synth = new SpeechSynthesizer();
+
+        if (savedVoice != null && _availableVoices.Any(x => x.Name == savedVoice))
+        {
+            synth.SelectVoice(savedVoice);
+        }
+        else
+        {
+            // 아직 사용되지 않은 음성 자동 배정
+            var usedNames = _playerSynths.Values.Select(s => s.Voice.Name).ToHashSet();
+            var next = _availableVoices.FirstOrDefault(x => !usedNames.Contains(x.Name));
+            if (next != null) synth.SelectVoice(next.Name);
+        }
+        _playerSynths[playerName] = synth;
+    }
+
+    private void SpeakForPlayer(string playerName, string text)
+    {
+        if (!_playerSynths.TryGetValue(playerName, out var synth)) return;
+        synth.SpeakAsyncCancelAll();
+        synth.SpeakAsync(text);
+    }
+
+    // ── 플레이어 목록 선택 시 콤보박스에 해당 음성 표시 ───────────────────
+    private void OnPlayerSelected(object? sender, EventArgs e)
+    {
+        if (_lstPlayers.SelectedItem is not string playerName) return;
+        if (!_playerSynths.TryGetValue(playerName, out var synth)) return;
+
+        string currentVoiceName = synth.Voice.Name;
+        for (int i = 0; i < _availableVoices.Count; i++)
+        {
+            if (_availableVoices[i].Name == currentVoiceName)
+            {
+                _cmbVoice.SelectedIndex = i;
+                break;
+            }
+        }
+    }
+
+    private void OnVoiceSelected(object? sender, EventArgs e)
+    {
+        if (_lstPlayers.SelectedItem is not string playerName) return;
+        if (_cmbVoice.SelectedIndex < 0 || _cmbVoice.SelectedIndex >= _availableVoices.Count) return;
+        if (!_playerSynths.TryGetValue(playerName, out var synth)) return;
+
+        var newVoice = _availableVoices[_cmbVoice.SelectedIndex];
+        synth.SelectVoice(newVoice.Name);
+        _settings.PlayerVoiceMap[playerName] = newVoice.Name;
+        SaveSettings();
+    }
+
+    private void OnTestVoice(object? sender, EventArgs e)
+    {
+        if (_lstPlayers.SelectedItem is not string playerName) return;
+        SpeakForPlayer(playerName, $"안녕하세요, 저는 {playerName}입니다.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  TTS 토글 / 번역 엔진 변경
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void OnToggleTts(object? sender, EventArgs e)
+    {
+        _settings.TtsEnabled = !_settings.TtsEnabled;
+        UpdateTtsButton();
+        SaveSettings();
+    }
+
+    private void UpdateTtsButton()
+    {
+        if (_btnToggleTts is null) return;
+        _btnToggleTts.Text = _settings.TtsEnabled ? "🔊 TTS 켜짐" : "🔇 TTS 꺼짐";
+        _btnToggleTts.BackColor = _settings.TtsEnabled ? AccentGreen : BgLight;
+    }
+
+    private void OnEngineChanged(object? sender, EventArgs e)
+    {
+        if (sender is RadioButton rb && rb.Checked)
+        {
+            _settings.TranslationEngine = _rbFast.Checked ? "argos" : "nllb";
+            SaveSettings();
+            // 엔진이 실행 중이면 설정 전달
+            _engine?.SendEngineConfig(_settings.TranslationEngine);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -424,6 +718,7 @@ public sealed class MainForm : Form
     {
         try
         {
+            _settings.ChatReceiveLang = GetSelectedLangCode(_cmbReceiveLang);
             var json = JsonConvert.SerializeObject(_settings, Formatting.Indented);
             File.WriteAllText(_settingsPath, json);
         }
@@ -433,43 +728,66 @@ public sealed class MainForm : Form
         }
     }
 
+    private void CleanUp()
+    {
+        CleanUpVoice();
+        _bridge?.Dispose();
+        _bridge = null;
+        foreach (var s in _playerSynths.Values) s.Dispose();
+        _playerSynths.Clear();
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  헬퍼
     // ─────────────────────────────────────────────────────────────────────────
 
+    private ComboBox MakeLangCombo(bool includeAutoDetect = false)
+    {
+        var cb = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = BgLight,
+            ForeColor = TextMain,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9.5f),
+            Height = 26,
+        };
+        if (includeAutoDetect)
+            cb.Items.Add(SupportedLanguages.AutoDetect);
+        foreach (var lang in SupportedLanguages.CoreLanguages)
+            cb.Items.Add(lang);
+        cb.SelectedIndex = 0;
+        return cb;
+    }
+
+    private static string GetSelectedLangCode(ComboBox cb)
+        => (cb.SelectedItem as LangItem)?.Code ?? "ko";
+
+    private static void SelectLang(ComboBox cb, string code)
+    {
+        for (int i = 0; i < cb.Items.Count; i++)
+        {
+            if ((cb.Items[i] as LangItem)?.Code == code) { cb.SelectedIndex = i; return; }
+        }
+    }
+
     private void Log(string message)
     {
+        if (_rtbLog is null) return;
         if (InvokeRequired) { Invoke(() => Log(message)); return; }
         _rtbLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
         _rtbLog.ScrollToCaret();
     }
 
-    private void SetStatus(string text, Color? color = null)
-    {
-        if (InvokeRequired) { Invoke(() => SetStatus(text, color)); return; }
-        _lblStatus.Text = text;
-        _lblStatus.ForeColor = color ?? TextSub;
-    }
-
-    private void SetDetectedLang(string text)
-    {
-        if (InvokeRequired) { Invoke(() => SetDetectedLang(text)); return; }
-        _lblDetectedLang.Text = text;
-    }
-
     private static Label MakeLabel(string text, bool bold = false, bool sub = false)
-    {
-        return new Label
+        => new Label
         {
             Text = text,
             ForeColor = sub ? TextSub : TextMain,
-            Font = bold
-                ? new Font("Segoe UI", 9.5f, FontStyle.Bold)
-                : new Font("Segoe UI", 8.5f),
+            Font = bold ? new Font("Segoe UI", 9.5f, FontStyle.Bold) : new Font("Segoe UI", 8.5f),
             AutoSize = true,
             BackColor = Color.Transparent,
         };
-    }
 
     private static Button MakeButton(string text, Color bg)
     {

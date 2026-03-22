@@ -88,6 +88,36 @@ public class AppSettings
 
     [JsonProperty("ai_engine")]
     public AiEngineSettings AiEngine { get; set; } = new();
+
+    // ── 발헤임 연동 ──────────────────────────────────────────────────────────
+
+    /// <summary>ValheimBridge TCP 서버 포트.</summary>
+    [JsonProperty("valheim_bridge_port")]
+    public int ValheimBridgePort { get; set; } = 7891;
+
+    /// <summary>TTS 활성화 여부.</summary>
+    [JsonProperty("tts_enabled")]
+    public bool TtsEnabled { get; set; } = true;
+
+    /// <summary>음성 입력 언어 (마이크 모드 발화 언어).</summary>
+    [JsonProperty("voice_source_lang")]
+    public string VoiceSourceLang { get; set; } = "ko";
+
+    /// <summary>발헤임 채팅 전송 번역 언어.</summary>
+    [JsonProperty("voice_target_lang")]
+    public string VoiceTargetLang { get; set; } = "en";
+
+    /// <summary>수신 채팅 번역 언어.</summary>
+    [JsonProperty("chat_receive_lang")]
+    public string ChatReceiveLang { get; set; } = "ko";
+
+    /// <summary>번역 엔진: "argos" (빠름) or "nllb" (정확).</summary>
+    [JsonProperty("translation_engine")]
+    public string TranslationEngine { get; set; } = "argos";
+
+    /// <summary>플레이어명 → TTS 음성 이름 매핑 (재시작 시 유지).</summary>
+    [JsonProperty("player_voice_map")]
+    public Dictionary<string, string> PlayerVoiceMap { get; set; } = new();
 }
 
 public class AiEngineSettings

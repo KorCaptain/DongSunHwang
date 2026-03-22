@@ -16,6 +16,7 @@ public sealed class AiEngineClient : IDisposable
     private volatile bool _running;
 
     public event EventHandler<TranslationResult>? ResultReceived;
+    public event EventHandler<TextTranslationResult>? TextResultReceived;
     public event EventHandler<string>? ErrorReceived;
     public event EventHandler? EngineReady;
 
@@ -97,6 +98,18 @@ public sealed class AiEngineClient : IDisposable
                     ResultReceived?.Invoke(this, result);
                     break;
 
+                case "text_result":
+                    var textResult = new TextTranslationResult(
+                        obj["text"]?.Value<string>() ?? string.Empty,
+                        obj["translation"]?.Value<string>() ?? string.Empty,
+                        obj["source_lang"]?.Value<string>() ?? string.Empty,
+                        obj["target_lang"]?.Value<string>() ?? string.Empty,
+                        obj["request_id"]?.Value<string>() ?? string.Empty,
+                        obj["author"]?.Value<string>() ?? string.Empty
+                    );
+                    TextResultReceived?.Invoke(this, textResult);
+                    break;
+
                 case "error":
                     ErrorReceived?.Invoke(this, obj["message"]?.Value<string>() ?? "Unknown error");
                     break;
@@ -130,6 +143,24 @@ public sealed class AiEngineClient : IDisposable
     }
 
     /// <summary>
+    /// 텍스트 번역 요청 (STT 없이 직접 번역). 발헤임 채팅 수신 번역에 사용.
+    /// </summary>
+    public void SendTextTranslation(string text, string sourceLang, string targetLang, string requestId, string author = "")
+    {
+        if (!IsReady || _stdin is null) return;
+        var msg = new JObject
+        {
+            ["type"] = "translate_text",
+            ["text"] = text,
+            ["source_lang"] = sourceLang,
+            ["target_lang"] = targetLang,
+            ["request_id"] = requestId,
+            ["author"] = author,
+        };
+        SendMessage(msg);
+    }
+
+    /// <summary>
     /// Send a config update to the AI engine.
     /// </summary>
     public void SendConfig(string sourceLang, string targetLang, float vadThreshold)
@@ -141,6 +172,20 @@ public sealed class AiEngineClient : IDisposable
             ["source_lang"] = sourceLang,
             ["target_lang"] = targetLang,
             ["vad_threshold"] = vadThreshold,
+        };
+        SendMessage(msg);
+    }
+
+    /// <summary>
+    /// 번역 엔진 변경 (argos = 빠름, nllb = 정확).
+    /// </summary>
+    public void SendEngineConfig(string engine)
+    {
+        if (_stdin is null) return;
+        var msg = new JObject
+        {
+            ["type"] = "config",
+            ["translation_engine"] = engine,
         };
         SendMessage(msg);
     }
@@ -184,4 +229,13 @@ public record TranslationResult(
     string SourceLang,
     string TargetLang,
     string? DetectedLang = null   // Whisper 자동감지 시 실제로 감지된 언어 코드
+);
+
+public record TextTranslationResult(
+    string Text,
+    string Translation,
+    string SourceLang,
+    string TargetLang,
+    string RequestId,
+    string Author
 );
