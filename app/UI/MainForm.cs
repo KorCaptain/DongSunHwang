@@ -1,10 +1,10 @@
 using System.Speech.Synthesis;
-using DiscordVoiceTranslator.Audio;
-using DiscordVoiceTranslator.Network;
-using DiscordVoiceTranslator.Overlay;
+using ValheimVoiceTranslator.Audio;
+using ValheimVoiceTranslator.Network;
+using ValheimVoiceTranslator.Overlay;
 using Newtonsoft.Json;
 
-namespace DiscordVoiceTranslator.UI;
+namespace ValheimVoiceTranslator.UI;
 
 /// <summary>
 /// 발헤임 음성 번역 채팅 자동화 메인 폼.

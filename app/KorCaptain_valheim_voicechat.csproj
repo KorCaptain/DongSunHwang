@@ -6,8 +6,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>DiscordVoiceTranslator</AssemblyName>
-    <RootNamespace>DiscordVoiceTranslator</RootNamespace>
+    <AssemblyName>KorCaptain_valheim_voicechat</AssemblyName>
+    <RootNamespace>ValheimVoiceTranslator</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 

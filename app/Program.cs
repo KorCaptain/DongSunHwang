@@ -1,8 +1,8 @@
 using System.IO;
-using DiscordVoiceTranslator.UI;
+using ValheimVoiceTranslator.UI;
 using Newtonsoft.Json;
 
-namespace DiscordVoiceTranslator;
+namespace ValheimVoiceTranslator;
 
 internal static class Program
 {

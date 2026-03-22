@@ -1,4 +1,4 @@
-namespace DiscordVoiceTranslator.Audio;
+namespace ValheimVoiceTranslator.Audio;
 
 /// <summary>
 /// 오디오 캡처 디바이스 정보 모델.

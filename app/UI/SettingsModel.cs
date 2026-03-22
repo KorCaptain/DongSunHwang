@@ -1,7 +1,7 @@
 using Newtonsoft.Json;
 using System.Globalization;
 
-namespace DiscordVoiceTranslator.UI;
+namespace ValheimVoiceTranslator.UI;
 
 /// <summary>
 /// 지원 언어 정의. 핵심 7개 언어 + 자동감지.

@@ -1,7 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace DiscordVoiceTranslator.Audio;
+namespace ValheimVoiceTranslator.Audio;
 
 /// <summary>
 /// Captures audio from a WASAPI loopback device (system audio or VB-Audio Virtual Cable)

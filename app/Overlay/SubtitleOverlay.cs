@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace DiscordVoiceTranslator.Overlay;
+namespace ValheimVoiceTranslator.Overlay;
 
 /// <summary>
 /// Transparent, always-on-top overlay window that displays subtitle text.

@@ -4,7 +4,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace DiscordVoiceTranslator.Network;
+namespace ValheimVoiceTranslator.Network;
 
 /// <summary>
 /// 발헤임 BepInEx 모드와 TCP로 통신하는 브릿지 서버.

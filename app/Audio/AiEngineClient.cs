@@ -3,7 +3,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
-namespace DiscordVoiceTranslator.Audio;
+namespace ValheimVoiceTranslator.Audio;
 
 /// <summary>
 /// Manages the Python AI Engine subprocess and handles JSON protocol I/O.
